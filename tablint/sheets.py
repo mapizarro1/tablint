@@ -55,17 +55,10 @@ def load_xlsx(
         n_rows = 0
         n_cols = 0
 
-        # Scan formulas/errors on the formula workbook (bounded).
-        for r_i, row in enumerate(ws_f.iter_rows(max_row=max_rows, max_col=max_cols)):
-            for cell in row:
-                dt = getattr(cell, "data_type", None)
-                if dt == "f":
-                    formula_cells += 1
-                elif dt == "e":
-                    error_cells += 1
-
-        # Build the value matrix from the data_only workbook (preferred), else
-        # fall back to formula workbook values.
+        # Build the value matrix first from the data_only workbook (read_only is
+        # lazy: it only yields populated rows, so this stays cheap even when a
+        # sheet's declared dimension is wildly inflated). This also gives us the
+        # true used bounds, which we then use to bound the formula scan.
         matrix: List[List[Any]] = []
         src = ws_v if ws_v is not None else ws_f
         truncated = False
@@ -96,6 +89,25 @@ def load_xlsx(
 
         n_rows = len(matrix)
         n_cols = true_width
+
+        # Scan formulas/errors bounded by the sheet's ACTUAL declared dimension,
+        # capped. The original bug forced max_row/max_col to the hard caps, which
+        # makes openpyxl instantiate a cell object for every position in a
+        # caps-sized grid (e.g. 5000x200) even for a 12-row sheet. Using the real
+        # dimension keeps this proportional to actual data, while the cap still
+        # protects against genuinely huge sheets. We scan the formula workbook
+        # (not the value matrix) because formula cells can have a None cached
+        # value and would otherwise be missed.
+        scan_rows = min(int(getattr(ws_f, "max_row", 0) or 0), max_rows)
+        scan_cols = min(int(getattr(ws_f, "max_column", 0) or 0), max_cols)
+        if scan_rows and scan_cols:
+            for row in ws_f.iter_rows(min_row=1, max_row=scan_rows, min_col=1, max_col=scan_cols):
+                for cell in row:
+                    dt = getattr(cell, "data_type", None)
+                    if dt == "f":
+                        formula_cells += 1
+                    elif dt == "e":
+                        error_cells += 1
 
         out.append(
             SheetData(
